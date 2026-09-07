@@ -106,30 +106,42 @@ public class CacheClient
     public <R, ID> R queryWithLogicalExpire(String keyPrefix, ID id, Class<R> type, Function<ID, R> dbFallback, Long time, TimeUnit unit)
     {
         String key = keyPrefix + id;
-        // 1. 查缓存
+        //  查缓存
         String json = stringRedisTemplate.opsForValue().get(key);
-        // 2. 缓存为空（未预热/冷启动）→ 逻辑过期方案不处理，返回 null 交给上层兜底
-        if (StrUtil.isBlank(json))
+        //  缓存为空
+        if (json != null  && StrUtil.isBlank(json))
         {
             return null;
         }
-        // 3. 解析缓存，判断是否逻辑过期
+        //  缓存中不存在(冷启动、物理删除)
+        if(json == null)
+        {
+            R bean = dbFallback.apply(id);
+            if(bean == null)
+            {
+                stringRedisTemplate.opsForValue().set(key, "", CACHE_NULL_TTL, TimeUnit.MINUTES);
+                return null;
+            }
+            setWithLogicalExpire(key, bean, time, unit);
+            return bean;
+        }
+        // 解析缓存，判断是否逻辑过期
         RedisData redisData = JSONUtil.toBean(json, RedisData.class);
         R bean = JSONUtil.toBean((JSONObject) redisData.getData(), type);
-        // 4. 未过期 → 直接返回
+        //  未过期 → 直接返回
         if (redisData.getExpireTime().isAfter(LocalDateTime.now()))
         {
             return bean;
         }
-        // 5. 已过期 → 尝试获取互斥锁
+        //  已过期 → 尝试获取互斥锁
         String lockKey = LOCK_KEY + id;
         boolean isLock = tryLock(lockKey);
-        // 6. 没抢到锁 → 返回旧数据（抢到锁的线程会去重建）
+        //  没抢到锁 → 返回旧数据（抢到锁的线程会去重建）
         if (!isLock)
         {
             return bean;
         }
-        // 7. 抢到锁 → double check，防止等锁期间别人已经重建
+        // 抢到锁 → double check，防止等锁期间别人已经重建
         try
         {
             json = stringRedisTemplate.opsForValue().get(key);
@@ -140,7 +152,7 @@ public class CacheClient
                 unlock(lockKey);
                 return JSONUtil.toBean((JSONObject) newRedisData.getData(), type);
             }
-            // 8. 确实还没重建 → 提交异步任务重建，由异步线程重建完后释放锁
+            //  确实还没重建 → 提交异步任务重建，由异步线程重建完后释放锁
             CACHE_REBUILD_EXECUTOR.submit(() ->
             {
                 try
@@ -163,7 +175,7 @@ public class CacheClient
             unlock(lockKey);
             throw new RuntimeException(e);
         }
-        // 9. 返回旧数据（当前请求不等待重建）
+        //  返回旧数据（当前请求不等待重建）
         return bean;
     }
 
