@@ -9,7 +9,10 @@ import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.UserHolder;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,7 +24,7 @@ import java.time.LocalDateTime;
  *  服务实现类
  * </p>
  *
- * @author 虎哥
+ * @author Fayles
  * @since 2021-12-22
  */
 @Service
@@ -31,6 +34,12 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Resource
     private RedisIdWorker redisIdWorker;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private RedissonClient redissonClient;
 
     @Override
     public Result seckillVoucher(Long voucherId) 
@@ -48,12 +57,21 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         {
             return Result.fail("库存不足");
         }
-
         Long userId = UserHolder.getUser().getId();
-        synchronized(userId.toString().intern())
+        //SimpleRedisLock redisLock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        RLock lock = redissonClient.getLock("lock:order:" + userId);
+        if(!lock.tryLock())
         {
-            IVoucherOrderService proxy =(IVoucherOrderService) AopContext.currentProxy();
+            return Result.fail("一人只能下一单");
+        }
+        try
+        {
+            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
             return proxy.createVoucherOrder(voucherId);
+        }
+        finally
+        {
+            lock.unlock();
         }
     }
 

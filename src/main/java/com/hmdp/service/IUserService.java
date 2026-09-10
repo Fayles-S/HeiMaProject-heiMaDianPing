@@ -10,7 +10,7 @@ import com.hmdp.entity.User;
  *  服务类
  * </p>
  *
- * @author 虎哥
+ * @author Fayles
  * @since 2021-12-22
  */
 public interface IUserService extends IService<User> {
